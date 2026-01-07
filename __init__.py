@@ -1,7 +1,12 @@
 import torch
 import os
 from comfy.model_management import get_torch_device
-from .vfi_utilities import preprocess_frames, postprocess_frames, generate_frames_rife, logger
+from .vfi_utilities import (
+    preprocess_frames,
+    postprocess_frames,
+    generate_frames_rife,
+    logger,
+)
 from .trt_utilities import Engine
 import folder_paths
 import time
@@ -9,24 +14,29 @@ from polygraphy import cuda
 
 ENGINE_DIR = os.path.join(folder_paths.models_dir, "tensorrt", "rife")
 
+
 class RifeTensorrt:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "frames": ("IMAGE", ),
+                "frames": ("IMAGE",),
                 "engine": (os.listdir(ENGINE_DIR),),
-                "clear_cache_after_n_frames": ("INT", {"default": 100, "min": 1, "max": 1000}),
+                "clear_cache_after_n_frames": (
+                    "INT",
+                    {"default": 100, "min": 1, "max": 1000},
+                ),
                 "multiplier": ("INT", {"default": 2, "min": 1}),
                 "use_cuda_graph": ("BOOLEAN", {"default": True}),
                 "keep_model_loaded": ("BOOLEAN", {"default": False}),
+                "isExecute": ("BOOLEAN", {"default": True}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", )
+    RETURN_TYPES = ("IMAGE",)
     FUNCTION = "vfi"
     CATEGORY = "tensorrt"
-    OUTPUT_NODE=True
+    OUTPUT_NODE = True
 
     def vfi(
         self,
@@ -36,7 +46,13 @@ class RifeTensorrt:
         multiplier=2,
         use_cuda_graph=True,
         keep_model_loaded=False,
+        isExecute=True,
     ):
+        # ---- Conditional execution ----
+        if not isExecute:
+            logger("RifeTensorrt skipped (isExecute=False)")
+            return (frames,)
+
         B, H, W, C = frames.shape
         shape_dict = {
             "img0": {"shape": (1, 3, H, W)},
@@ -46,7 +62,8 @@ class RifeTensorrt:
 
         cudaStream = cuda.Stream()
         engine_path = os.path.join(ENGINE_DIR, engine)
-        if (not hasattr(self, 'engine') or self.engine_label != engine):
+
+        if not hasattr(self, "engine") or self.engine_label != engine:
             self.engine = Engine(engine_path)
             logger(f"Loading TensorRT engine: {engine_path}")
             self.engine.load()
@@ -60,18 +77,30 @@ class RifeTensorrt:
         frames = preprocess_frames(frames)
 
         def return_middle_frame(frame_0, frame_1, timestep):
-            timestep_t = torch.tensor([timestep], dtype=torch.float32).to(get_torch_device())
-            # s = time.time()
-            output = self.engine.infer({"img0": frame_0, "img1": frame_1, "timestep": timestep_t}, cudaStream, use_cuda_graph)
-            # e = time.time()
-            # print(f"Time taken to infer: {(e-s)*1000} ms")
+            timestep_t = (
+                torch.tensor([timestep], dtype=torch.float32)
+                .to(get_torch_device())
+            )
+            output = self.engine.infer(
+                {
+                    "img0": frame_0,
+                    "img1": frame_1,
+                    "timestep": timestep_t,
+                },
+                cudaStream,
+                use_cuda_graph,
+            )
+            return output["output"]
 
-            result = output['output']
-            return result
+        result = generate_frames_rife(
+            frames,
+            clear_cache_after_n_frames,
+            multiplier,
+            return_middle_frame,
+        )
 
-        result = generate_frames_rife(frames, clear_cache_after_n_frames, multiplier, return_middle_frame)
         out = postprocess_frames(result)
-        
+
         if not keep_model_loaded:
             del self.engine, self.engine_label
 
@@ -86,4 +115,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RifeTensorrt": "⚡ Rife Tensorrt",
 }
 
-__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
+__all__ = [
+    "NODE_CLASS_MAPPINGS",
+    "NODE_DISPLAY_NAME_MAPPINGS",
+]
